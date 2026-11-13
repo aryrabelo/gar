@@ -1,11 +1,14 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -35,16 +38,52 @@ func cmdRun(st Store, args []string) int {
 	fs := newFlags("run")
 	yes := fs.Bool("yes", false, "não pergunta [y/N] (o TTY continua obrigatório)")
 	again := fs.Bool("again", false, "roda de novo um caso já terminado (zera os passos)")
-	id, code := oneID(fs, args)
-	if code >= 0 {
-		return code
+	pos, err := parseArgs(fs, args)
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	if err != nil || len(pos) > 1 {
+		fmt.Fprintln(os.Stderr, "gar run: informe no máximo um id")
+		return exitUsage
+	}
+	id := 0
+	if len(pos) == 1 {
+		if id, err = strconv.Atoi(pos[0]); err != nil {
+			fmt.Fprintf(os.Stderr, "gar run: id inválido %q\n", pos[0])
+			return exitUsage
+		}
 	}
 	stdinFd := int(os.Stdin.Fd())
 	if !term.IsTerminal(stdinFd) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		fmt.Fprintf(os.Stderr, "gar run: stdin e stdout precisam ser um terminal (TTY).\n"+
-			"Este comando é para o humano rodar no terminal dele: ! gar run %d\n"+
-			"Agente: use gar wait %d para esperar o resultado.\n", id, id)
+		fmt.Fprint(os.Stderr, "gar run: stdin e stdout precisam ser um terminal (TTY).\n"+
+			"Este comando é para o humano rodar no terminal dele: ! gar run\n"+
+			"Agente: use gar wait <id> para esperar o resultado.\n")
 		return exitNoTTY
+	}
+	picked := false
+	if id == 0 {
+		runs, err := st.List()
+		if err != nil {
+			return fail(exitFailed, err)
+		}
+		ws := detectWorkspace()
+		cases := pendingIn(runs, ws)
+		if len(cases) == 0 {
+			where := "nenhum workspace detectado"
+			if ws != "" {
+				where = ws
+			}
+			return fail(exitState, fmt.Errorf("nenhum caso pendente (%s); veja gar ls --status pending", where))
+		}
+		r, err := pickCase(cases, ws)
+		if err != nil {
+			return fail(exitFailed, err)
+		}
+		if r == nil {
+			fmt.Println("nada rodado")
+			return exitCancelled
+		}
+		id, picked = r.ID, true
 	}
 	rec, err := st.Load(id)
 	if err != nil {
@@ -63,7 +102,8 @@ func cmdRun(st Store, args []string) int {
 	go rn.handleSignals(sigCh)
 
 	printPlan(rec)
-	if !*yes && !confirm("Rodar? [y/N] ") {
+	// Enter in the picker already confirmed the case.
+	if !*yes && !picked && !confirm("Rodar? [y/N] ") {
 		rn.mu.Lock()
 		defer rn.mu.Unlock()
 		rn.finished = true

@@ -47,6 +47,7 @@ type Run struct {
 	Expect     string     `json:"expect"`
 	Cwd        string     `json:"cwd"`
 	Host       string     `json:"host"`
+	Workspace  string     `json:"workspace,omitempty"`
 	RanAt      *time.Time `json:"ran_at"`
 	FinishedAt *time.Time `json:"finished_at"`
 	Steps      []Step     `json:"steps"`

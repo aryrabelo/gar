@@ -37,7 +37,99 @@ func TestMain(m *testing.M) {
 }
 
 func garEnv(home string) []string {
-	return append(os.Environ(), "GAR_HOME="+home, "SHELL=/bin/sh", "GAR_FROM=teste")
+	return append(os.Environ(), "GAR_HOME="+home, "SHELL=/bin/sh", "GAR_FROM=teste", "GAR_WORKSPACE=ws-teste")
+}
+
+// addIn registers a case as an agent in workspace ws would.
+func addIn(t *testing.T, home, ws string, steps ...string) int {
+	t.Helper()
+	c := exec.Command(garBin, append([]string{"add", "--json", "--"}, steps...)...)
+	c.Env = append(garEnv(home), "GAR_WORKSPACE="+ws)
+	out, err := c.Output()
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	var r Run
+	if err := json.Unmarshal(out, &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Workspace != ws {
+		t.Fatalf("workspace %q, quer %q", r.Workspace, ws)
+	}
+	return r.ID
+}
+
+// Bare gar run lists only this workspace's pending cases, oldest first;
+// ↓ then Enter runs the second one without a [y/N] prompt.
+func TestBareRunPicksFromWorkspace(t *testing.T) {
+	home := t.TempDir()
+	first := addIn(t, home, "bora:w1", "echo primeiro")
+	other := addIn(t, home, "herdr-app:outro", "echo outro-ws")
+	second := addIn(t, home, "bora:w1", "echo segundo-rodou")
+
+	run := exec.Command(garBin, "run")
+	run.Env = append(garEnv(home), "GAR_WORKSPACE=bora:w1")
+	ptmx, err := pty.StartWithSize(run, &pty.Winsize{Rows: 40, Cols: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ptmx.Close()
+	var mu sync.Mutex
+	var screen bytes.Buffer
+	go func() {
+		b := make([]byte, 1024)
+		for {
+			n, err := ptmx.Read(b)
+			mu.Lock()
+			screen.Write(b[:n])
+			mu.Unlock()
+			if err != nil {
+				return
+			}
+		}
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		s := screen.String()
+		mu.Unlock()
+		if strings.Contains(s, "Enter roda") && strings.Contains(s, "echo primeiro") {
+			if strings.Contains(s, "outro-ws") {
+				t.Fatalf("caso de outro workspace no seletor: %q", s)
+			}
+			if i, j := strings.Index(s, strconv.Itoa(first)), strings.Index(s, strconv.Itoa(second)); i < 0 || j < i {
+				t.Fatalf("ordem não é FIFO: %q", s)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("sem seletor; tela: %q", s)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	ptmx.Write([]byte("\x1b[B"))
+	time.Sleep(100 * time.Millisecond)
+	ptmx.Write([]byte("\r"))
+	if err := run.Wait(); err != nil {
+		mu.Lock()
+		t.Fatalf("gar run: %v; tela: %q", err, screen.String())
+	}
+
+	st := Store{Home: home}
+	for id, want := range map[int]string{first: StatusPending, other: StatusPending, second: StatusDone} {
+		r, err := st.Load(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.Status != want {
+			t.Fatalf("caso %d: %s, quer %s", id, r.Status, want)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if strings.Contains(screen.String(), "[y/N]") {
+		t.Fatal("seletor ainda pediu [y/N]")
+	}
 }
 
 // gar runs the binary without a TTY and returns stdout and the exit code.

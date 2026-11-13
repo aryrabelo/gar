@@ -28,7 +28,8 @@ const (
 const usage = `gar — o agente registra, o humano roda, o agente lê o resultado.
 
   gar add [--why s] [--expect s] [--from s] [--json] -- <cmd> [<cmd>...]
-  gar run <id> [--yes] [--again]       (só humano: exige TTY)
+  gar run [<id>] [--yes] [--again]     (só humano: exige TTY; sem id escolhe
+                                       com ↑/↓ e Enter entre os pendentes do workspace)
   gar wait <id> [--timeout dur]
   gar show <id> [--json]
   gar ls [--status s] [--limit n]
@@ -166,7 +167,7 @@ func cmdAdd(st Store, args []string) int {
 	host, _ := os.Hostname()
 	r := &Run{
 		Status: StatusPending, CreatedAt: time.Now(), CreatedBy: *from,
-		Why: *why, Expect: *expect, Cwd: cwd, Host: host,
+		Why: *why, Expect: *expect, Cwd: cwd, Host: host, Workspace: detectWorkspace(),
 	}
 	for _, c := range steps {
 		r.Steps = append(r.Steps, Step{Cmd: c, Status: StatusPending})
@@ -176,6 +177,10 @@ func cmdAdd(st Store, args []string) int {
 	}
 	if *asJSON {
 		printJSON(r)
+		return 0
+	}
+	if r.Workspace != "" {
+		fmt.Printf("caso %d registrado em %s\n[HUMAN] ! gar run\n", r.ID, r.Workspace)
 		return 0
 	}
 	fmt.Printf("caso %d registrado\n[HUMAN] ! gar run %d\n", r.ID, r.ID)

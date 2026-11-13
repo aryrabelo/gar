@@ -10,20 +10,32 @@ Serve para quando o agente não pode rodar sozinho: o guard bloqueia `ssh`, ou o
    gar add --why "atualizar o macbot" -- \
      'ssh macbot "cd ~/Sites/dotfiles-2026 && git pull --ff-only origin main && ./switch"' \
      'bora --version'
-   # caso 1020 registrado
-   # [HUMAN] ! gar run 1020
+   # caso 1020 registrado em bora:w1D6
+   # [HUMAN] ! gar run
    ```
 2. O agente deixa `gar wait 1020` rodando em background.
-3. O humano roda `! gar run 1020`, confere os passos e responde `y`. Cada passo roda num PTY
+3. O humano roda `! gar run` no mesmo workspace: aparecem os casos pendentes dali, o mais antigo
+   marcado. `↑`/`↓` escolhe, `Enter` roda, `Esc` sai sem mexer em nada. Cada passo roda num PTY
    (`$SHELL -c`), então prompt de `sudo`/ssh e Ctrl-C funcionam. Para no primeiro que falhar.
 4. O `gar wait` do agente sai com o registro em JSON: saída e exit code de cada passo.
+
+### Workspace
+
+O `gar add` grava em `workspace` onde o agente estava; o `gar run` sem id usa a mesma detecção:
+
+| Onde | Detecta por | Valor |
+|---|---|---|
+| `$GAR_WORKSPACE` definido | a própria variável | o valor dela |
+| bora / herdr TUI | `$HERDR_WORKSPACE_ID` (+ nome do binário em `$HERDR_BIN_PATH`) | `bora:w1D6` |
+| Herdr app | `$HC_TERMINAL_ID` → espaço do terminal em `hc ls --json` | `herdr-app:<espaço>` (sem resposta do `hc`: `herdr-app:terminal:<id>`) |
+| nenhum | — | vazio: `add` imprime `! gar run <id>`, e `run` sem id oferece todos os pendentes |
 
 ## Comandos
 
 | Comando | O que faz |
 |---|---|
 | `gar add [--why s] [--expect s] [--from s] [--json] -- <cmd>...` | Registra um caso; cada argumento depois de `--` é um passo. `--from` padrão: `$GAR_FROM`. |
-| `gar run <id> [--yes] [--again]` | Só humano: exige TTY em stdin e stdout. Mostra os passos, pergunta `[y/N]` (`--yes` pula). `--again` roda de novo um caso terminado. Responder não cancela o caso. |
+| `gar run [<id>] [--yes] [--again]` | Só humano: exige TTY em stdin e stdout. Sem id: seletor com os pendentes do workspace, mais antigo primeiro; `Enter` já confirma. Com id: mostra os passos e pergunta `[y/N]` (`--yes` pula). `--again` roda de novo um caso terminado. Responder não cancela o caso. |
 | `gar wait <id> [--timeout dur]` | Espera o caso terminar (poll de 500 ms) e imprime o JSON. Sem timeout padrão. |
 | `gar show <id> [--json]` | Resumo: passo, exit, duração, últimas linhas da saída. |
 | `gar ls [--status s] [--limit n]` | Lista os casos, mais novos primeiro (padrão 20). |
