@@ -85,6 +85,9 @@ func cmdRun(st Store, args []string) int {
 			return exitCancelled
 		}
 		id, picked = r.ID, true
+		if herdrDialog() {
+			labelCase(id)
+		}
 	}
 	rec, err := st.Load(id)
 	if err != nil {

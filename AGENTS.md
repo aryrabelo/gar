@@ -17,3 +17,4 @@ Consultar: `gar show <id>`, `gar ls --status pending`.
 
 Go puro (`CGO_ENABLED=0`), deps só `creack/pty` e `golang.org/x/term`, `flag` da stdlib.
 `go vet ./... && go test ./...` antes de commitar. O teste de integração sobe `gar run` num PTY real.
+`GAR_HERDR_DIALOG=1` (só o mod `gar-run` do Herdr desktop põe): no seletor, `Esc` roda `herdr-app do overlay.close` e segue esperando, e o caso escolhido ganha `hc label $HC_TERMINAL_ID gar.case=<id>`.

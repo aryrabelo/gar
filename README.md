@@ -17,6 +17,9 @@ Serve para quando o agente não pode rodar sozinho: o guard bloqueia `ssh`, ou o
 3. O humano roda `! gar run` no mesmo workspace: aparecem os casos pendentes dali, o mais antigo
    marcado. `↑`/`↓` escolhe, `Enter` roda, `Esc` sai sem mexer em nada. Cada passo roda num PTY
    (`$SHELL -c`), então prompt de `sudo`/ssh e Ctrl-C funcionam. Para no primeiro que falhar.
+   Com `GAR_HERDR_DIALOG=1` (posto pelo mod `gar-run` do Herdr desktop), `Esc` só esconde o diálogo
+   (`herdr-app do overlay.close`) e o seletor segue esperando; `q`/Ctrl-C saem. O caso escolhido
+   marca o terminal com `hc label $HC_TERMINAL_ID gar.case=<id>`.
 4. O `gar wait` do agente sai com o registro em JSON: saída e exit code de cada passo.
 
 ### Workspace
