@@ -43,7 +43,7 @@ func garEnv(home string) []string {
 // addIn registers a case as an agent in workspace ws would.
 func addIn(t *testing.T, home, ws string, steps ...string) int {
 	t.Helper()
-	c := exec.Command(garBin, append([]string{"add", "--json", "--"}, steps...)...)
+	c := exec.Command(garBin, append([]string{"add", "--why", "teste", "--json", "--"}, steps...)...)
 	c.Env = append(garEnv(home), "GAR_WORKSPACE="+ws)
 	out, err := c.Output()
 	if err != nil {
@@ -185,6 +185,28 @@ func TestConcurrentAddsGetUniqueIDs(t *testing.T) {
 		if !seen[id] {
 			t.Fatalf("faltou o id %d (vistos %v)", id, seen)
 		}
+	}
+}
+
+// gar add without a real --why is a usage error and records nothing.
+func TestAddRequiresWhy(t *testing.T) {
+	for name, args := range map[string][]string{
+		"ausente":    {"add", "--", "true"},
+		"só espaços": {"add", "--why", "  \t", "--", "true"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			home := t.TempDir()
+			out, code := gar(t, home, args...)
+			if code != exitUsage || !strings.Contains(out, "--why é obrigatório") {
+				t.Fatalf("exit %d, quer %d: %s", code, exitUsage, out)
+			}
+			if runs, _ := filepath.Glob(filepath.Join(home, "runs", "*.json")); len(runs) != 0 {
+				t.Fatalf("gravou caso sem --why: %v", runs)
+			}
+		})
+	}
+	if r := addCase(t, t.TempDir(), "true"); r.Why != "teste" || r.Status != StatusPending {
+		t.Fatalf("com --why: %+v", r)
 	}
 }
 
