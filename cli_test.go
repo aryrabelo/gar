@@ -283,17 +283,17 @@ func TestRunInPTYWithParallelWait(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		mu.Lock()
-		ready := strings.Contains(screen.String(), "[y/N]")
+		ready := strings.Contains(screen.String(), "[Y/n]")
 		mu.Unlock()
 		if ready {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("sem prompt [y/N]; tela: %q", screen.String())
+			t.Fatalf("sem prompt [Y/n]; tela: %q", screen.String())
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	ptmx.Write([]byte("y\r"))
+	ptmx.Write([]byte("\r")) // Enter alone is yes
 
 	runErr := run.Wait()
 	var ee *exec.ExitError

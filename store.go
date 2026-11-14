@@ -41,16 +41,20 @@ type Step struct {
 }
 
 type Run struct {
-	ID         int        `json:"id"`
-	Status     string     `json:"status"`
-	CreatedAt  time.Time  `json:"created_at"`
-	CreatedBy  string     `json:"created_by"`
-	Why        string     `json:"why"`
-	Expect     string     `json:"expect"`
-	Cwd        string     `json:"cwd"`
-	Host       string     `json:"host"`
-	Workspace  string     `json:"workspace,omitempty"`
-	RanAt      *time.Time `json:"ran_at"`
+	ID        int        `json:"id"`
+	Status    string     `json:"status"`
+	CreatedAt time.Time  `json:"created_at"`
+	CreatedBy string     `json:"created_by"`
+	Why       string     `json:"why"`
+	Expect    string     `json:"expect"`
+	Cwd       string     `json:"cwd"`
+	Host      string     `json:"host"`
+	Workspace string     `json:"workspace,omitempty"`
+	RanAt     *time.Time `json:"ran_at"`
+	// RunBy names who took the case: pid, workspace and Herdr terminal.
+	RunBy string `json:"run_by,omitempty"`
+	// RunPID is the gar run process that owns a running case (0 in old cases).
+	RunPID     int        `json:"run_pid,omitempty"`
 	FinishedAt *time.Time `json:"finished_at"`
 	// StepTimeout caps each step (Go duration, e.g. "10m"); empty = defaultStepTimeout.
 	StepTimeout string `json:"step_timeout,omitempty"`
@@ -93,7 +97,7 @@ func (r *Run) Reset() error {
 		return fmt.Errorf("caso %d está %s; --again só vale para caso terminado: %w", r.ID, r.Status, errState)
 	}
 	r.Status = StatusPending
-	r.RanAt, r.FinishedAt = nil, nil
+	r.RanAt, r.FinishedAt, r.RunBy, r.RunPID = nil, nil, "", 0
 	for i := range r.Steps {
 		r.Steps[i] = Step{Cmd: r.Steps[i].Cmd, Status: StatusPending}
 	}
