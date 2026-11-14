@@ -310,6 +310,9 @@ func cmdShow(st Store, args []string) int {
 		fmt.Printf(" por %s", r.CreatedBy)
 	}
 	fmt.Printf(" · %s:%s\n", r.Host, r.Cwd)
+	if q := r.queuedLive(); q != nil {
+		fmt.Printf("%s desde %s (gar run pid %d)\n", q.behindText(), q.Since.Format("15:04:05"), q.PID)
+	}
 	if r.Parallel {
 		fmt.Println("paralelo: roda junto de outros casos, sem fila")
 	}
@@ -382,7 +385,9 @@ func cmdLs(st Store, args []string) int {
 			}
 		}
 		who := "-"
-		if r.Status == StatusRunning && r.RunBy != "" {
+		if q := r.queuedLive(); q != nil {
+			who = q.behindText()
+		} else if r.Status == StatusRunning && r.RunBy != "" {
 			who = r.RunBy
 		}
 		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Status, who,
@@ -415,7 +420,7 @@ func cmdCancel(st Store, args []string) int {
 			return fmt.Errorf("caso %d está %s; só caso pending ou running órfão pode ser cancelado: %w", id, r.Status, errState)
 		}
 		now := time.Now()
-		r.FinishedAt = &now
+		r.FinishedAt, r.Queued = &now, nil
 		for i := range r.Steps {
 			switch r.Steps[i].Status {
 			case StatusRunning:

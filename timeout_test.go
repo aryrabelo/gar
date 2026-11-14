@@ -143,11 +143,12 @@ func addParallel(t *testing.T, home string, steps ...string) *Run {
 	return &r
 }
 
-// A second sequential run waits in the queue, naming the case ahead, and runs after it.
+// A second sequential run waits in the queue, naming the case ahead, and runs
+// after it; while it waits the case carries a queued mark, gone once it starts.
 func TestSequentialRunQueues(t *testing.T) {
 	home := t.TempDir()
 	busy := addCase(t, home, "sleep 2")
-	next := addCase(t, home, "echo segundo-rodou")
+	next := addCase(t, home, "sleep 1 && echo segundo-rodou")
 
 	first, _ := startRun(t, home, strconv.Itoa(busy.ID), "--yes")
 	waitStatus(t, home, busy.ID, StatusRunning)
@@ -161,8 +162,22 @@ func TestSequentialRunQueues(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if got := showCase(t, home, next.ID); got.Status != StatusPending {
-		t.Fatalf("caso na fila está %s com o outro rodando", got.Status)
+	got := showCase(t, home, next.ID)
+	if got.Status != StatusPending || got.RanAt != nil || got.Queued == nil ||
+		got.Queued.PID != second.Process.Pid || got.Queued.Behind != busy.ID || got.Queued.Since.IsZero() {
+		t.Fatalf("caso na fila: status %s, queued %+v", got.Status, got.Queued)
+	}
+	behind := "na fila atrás do " + strconv.Itoa(busy.ID)
+	if out, _ := gar(t, home, "show", strconv.Itoa(next.ID)); !strings.Contains(out, behind) {
+		t.Fatalf("show não diz a fila: %s", out)
+	}
+	ls, _ := gar(t, home, "ls")
+	if !regexp.MustCompile(`(?m)^` + strconv.Itoa(next.ID) + `\s+pending\s+` + behind + `\s`).MatchString(ls) {
+		t.Fatalf("ls não diz a fila: %s", ls)
+	}
+	waitStatus(t, home, next.ID, StatusRunning)
+	if got := showCase(t, home, next.ID); got.Queued != nil {
+		t.Fatalf("queued continua com o caso rodando: %+v", got.Queued)
 	}
 	if c := exitOf(t, first.Wait()); c != 0 {
 		t.Fatalf("primeiro run exit %d", c)

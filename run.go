@@ -143,11 +143,12 @@ func cmdRun(st Store, args []string) int {
 			return fmt.Errorf("caso %d está %s; não rodei: %w", id, r.Status, errState)
 		}
 		now := time.Now()
-		r.RanAt, r.RunBy, r.RunPID = &now, runnerID(), os.Getpid()
+		r.RanAt, r.RunBy, r.RunPID, r.Queued = &now, runnerID(), os.Getpid(), nil
 		return r.SetStatus(StatusRunning)
 	})
 	if err != nil {
 		rn.finished = true
+		clearQueued(st, id)
 		rn.mu.Unlock()
 		return loadErr(err)
 	}
@@ -193,7 +194,7 @@ func cancelPending(r *Run) error {
 		return err
 	}
 	now := time.Now()
-	r.FinishedAt = &now
+	r.FinishedAt, r.Queued = &now, nil
 	for i := range r.Steps {
 		r.Steps[i].Status = StepSkipped
 	}
@@ -422,13 +423,16 @@ func (rn *runner) cancel(sig syscall.Signal) {
 	}
 	rn.restoreTerm()
 	rec := rn.rec
-	if rec.Status == StatusPending {
+	if rec.Status != StatusRunning {
 		// Not claimed yet (confirming or queued): another run may own the case
 		// by now, so cancel only if the stored case is still pending.
-		if _, err := rn.st.Update(rec.ID, cancelPending); err == nil {
-			fmt.Fprintf(os.Stderr, "\ngar: caso %d cancelado (%s)\n", rec.ID, sig)
+		if rec.Status == StatusPending {
+			if _, err := rn.st.Update(rec.ID, cancelPending); err == nil {
+				fmt.Fprintf(os.Stderr, "\ngar: caso %d cancelado (%s)\n", rec.ID, sig)
+			}
 		}
-	} else if rec.Status == StatusRunning {
+		clearQueued(rn.st, rec.ID) // --again on a finished case, or the case was taken meanwhile
+	} else {
 		now := time.Now()
 		for i := range rec.Steps {
 			s := &rec.Steps[i]

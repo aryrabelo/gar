@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -121,6 +122,64 @@ func TestNextIDSkipsExistingCase(t *testing.T) {
 	id, err := st.NextID()
 	if err != nil || id != 1002 {
 		t.Fatalf("NextID = %d, %v; quer 1002", id, err)
+	}
+}
+
+// A queue mark is written and cleared by its own gar run, counts only while
+// that run lives and the case is pending, and goes away when the case is cancelled.
+func TestQueuedMark(t *testing.T) {
+	st := Store{Home: t.TempDir()}
+	st.Init()
+	r := &Run{Status: StatusPending, Steps: []Step{{Cmd: "x", Status: StatusPending}}}
+	if err := st.Create(r); err != nil {
+		t.Fatal(err)
+	}
+	load := func() *Run {
+		t.Helper()
+		got, err := st.Load(r.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	markQueued(st, r.ID, 1143)
+	q := load().queuedLive()
+	if q == nil || q.PID != os.Getpid() || q.Behind != 1143 || q.Since.IsZero() || q.behindText() != "na fila atrás do 1143" {
+		t.Fatalf("marca gravada: %+v", q)
+	}
+	clearQueued(st, r.ID)
+	if got := load(); got.Queued != nil {
+		t.Fatalf("clearQueued deixou %+v", got.Queued)
+	}
+
+	dead := exec.Command("true")
+	if err := dead.Run(); err != nil {
+		t.Fatal(err)
+	}
+	stale := &Queued{PID: dead.Process.Pid, Behind: 1143}
+	if _, err := st.Update(r.ID, func(r *Run) error { r.Queued = stale; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if got := load(); got.queuedLive() != nil {
+		t.Fatalf("marca de pid morto contou como fila: %+v", got.Queued)
+	}
+	clearQueued(st, r.ID) // not ours: stays
+	if got := load(); got.Queued == nil || got.Queued.PID != stale.PID {
+		t.Fatalf("clearQueued apagou a marca de outro run: %+v", got.Queued)
+	}
+
+	live := load()
+	live.Status, live.Queued = StatusRunning, &Queued{PID: os.Getpid()}
+	if live.queuedLive() != nil {
+		t.Fatal("caso fora de pending não está na fila")
+	}
+
+	if _, err := st.Update(r.ID, cancelPending); err != nil {
+		t.Fatal(err)
+	}
+	if got := load(); got.Queued != nil || got.Status != StatusCancelled {
+		t.Fatalf("cancelado com queued %+v (%s)", got.Queued, got.Status)
 	}
 }
 
