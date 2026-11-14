@@ -27,7 +27,7 @@ const (
 
 const usage = `gar — o agente registra, o humano roda, o agente lê o resultado.
 
-  gar add [--why s] [--expect s] [--from s] [--timeout dur] [--parallel] [--json] -- <cmd> [<cmd>...]
+  gar add --why s [--expect s] [--from s] [--timeout dur] [--parallel] [--json] -- <cmd> [<cmd>...]
   gar run [<id>] [--yes] [--again]     (só humano: exige TTY; sem id escolhe
                                        com ↑/↓ e Enter entre os pendentes do workspace)
   gar wait [<id>] [--timeout dur]      (sem id: espera os casos running do workspace)
@@ -140,7 +140,7 @@ func printJSON(v any) {
 
 func cmdAdd(st Store, args []string) int {
 	fs := newFlags("add")
-	why := fs.String("why", "", "por que o humano precisa rodar isto")
+	why := fs.String("why", "", "obrigatório: a barreira que impede o agente (hook, EPERM, TTY, sudo/senha, login)")
 	expect := fs.String("expect", "", "o que se espera ver")
 	from := fs.String("from", os.Getenv("GAR_FROM"), "quem registrou (padrão $GAR_FROM)")
 	parallel := fs.Bool("parallel", false, "o caso roda junto de outros, sem entrar na fila do gar run")
@@ -158,6 +158,10 @@ func cmdAdd(st Store, args []string) int {
 		return 0
 	}
 	if err != nil {
+		return exitUsage
+	}
+	if strings.TrimSpace(*why) == "" {
+		fmt.Fprintln(os.Stderr, "gar: --why é obrigatório: diga a barreira que impede o agente (hook, EPERM, TTY, sudo/senha, login)")
 		return exitUsage
 	}
 	steps = append(pos, steps...)

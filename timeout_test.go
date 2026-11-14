@@ -69,7 +69,7 @@ func showCase(t *testing.T, home string, id int) Run {
 // A hung step fails with reason "timeout", the case stops and gar wait returns.
 func TestStepTimeoutFailsCase(t *testing.T) {
 	home := t.TempDir()
-	out, code := gar(t, home, "add", "--timeout", "1s", "--json", "--", "sleep 60", "echo nunca-roda")
+	out, code := gar(t, home, "add", "--why", "teste", "--timeout", "1s", "--json", "--", "sleep 60", "echo nunca-roda")
 	if code != 0 {
 		t.Fatalf("add exit %d: %s", code, out)
 	}
@@ -122,7 +122,7 @@ func waitStatus(t *testing.T, home string, id int, status string) {
 
 func addParallel(t *testing.T, home string, steps ...string) *Run {
 	t.Helper()
-	out, code := gar(t, home, append([]string{"add", "--parallel", "--json", "--"}, steps...)...)
+	out, code := gar(t, home, append([]string{"add", "--why", "teste", "--parallel", "--json", "--"}, steps...)...)
 	if code != 0 {
 		t.Fatalf("add exit %d: %s", code, out)
 	}
