@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -60,6 +61,11 @@ func cmdRun(st Store, args []string) int {
 			"Agente: use gar wait <id> para esperar o resultado.\n")
 		return exitNoTTY
 	}
+	lock, err := acquireRunLock(st)
+	if err != nil {
+		return loadErr(err)
+	}
+	defer lock.release()
 	picked := false
 	if id == 0 {
 		runs, err := st.List()
@@ -139,6 +145,9 @@ func cmdRun(st Store, args []string) int {
 		return loadErr(err)
 	}
 	rn.rec = rec
+	if err := lock.claim(id); err != nil {
+		fmt.Fprintln(os.Stderr, "gar: gravando run.lock:", err)
+	}
 	rn.mu.Unlock()
 
 	go rn.forwardStdin()
@@ -267,7 +276,7 @@ func (rn *runner) runStep(i int) int {
 	if err != nil {
 		fmt.Fprintf(buf, "gar: não consegui iniciar o passo: %v\n", err)
 		rn.mu.Unlock()
-		return rn.finishStep(127)
+		return rn.finishStep(127, "")
 	}
 	_ = pty.InheritSize(os.Stdin, ptmx)
 	rn.child, rn.ptmx = c, ptmx
@@ -281,7 +290,16 @@ func (rn *runner) runStep(i int) int {
 		io.Copy(io.MultiWriter(os.Stdout, buf), ptmx) // EIO once the child side closes
 		close(copied)
 	}()
+	limit := rec.stepTimeout()
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(limit, func() {
+		timedOut.Store(true)
+		pgid := c.Process.Pid // pty.Start makes the child a session leader
+		syscall.Kill(-pgid, syscall.SIGHUP)
+		time.AfterFunc(5*time.Second, func() { syscall.Kill(-pgid, syscall.SIGKILL) })
+	})
 	c.Wait()
+	timer.Stop()
 	// Drain what the child wrote; a background grandchild holding the PTY
 	// open must not hang us, so give up after a moment.
 	select {
@@ -294,7 +312,13 @@ func (rn *runner) runStep(i int) int {
 	rn.restoreTerm()
 	rn.child, rn.ptmx = nil, nil
 	rn.mu.Unlock()
-	return rn.finishStep(exitCode(c.ProcessState))
+	if timedOut.Load() {
+		msg := fmt.Sprintf("gar: passo estourou o timeout de %s; parei o caso\n", limit)
+		fmt.Fprint(os.Stderr, "\n"+msg)
+		fmt.Fprint(buf, msg)
+		return rn.finishStep(exitTimeout, "timeout")
+	}
+	return rn.finishStep(exitCode(c.ProcessState), "")
 }
 
 func exitCode(ps *os.ProcessState) int {
@@ -307,7 +331,7 @@ func exitCode(ps *os.ProcessState) int {
 	return ps.ExitCode()
 }
 
-func (rn *runner) finishStep(code int) int {
+func (rn *runner) finishStep(code int, reason string) int {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 	s := &rn.rec.Steps[rn.step]
@@ -315,7 +339,7 @@ func (rn *runner) finishStep(code int) int {
 	s.ExitCode, s.FinishedAt = &code, &now
 	s.DurationMs = now.Sub(rn.started).Milliseconds()
 	s.Output, s.OutputTruncated = rn.buf.Result()
-	s.Status = StatusDone
+	s.Status, s.Reason = StatusDone, reason
 	if code != 0 {
 		s.Status = StatusFailed
 	}

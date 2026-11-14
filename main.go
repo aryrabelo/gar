@@ -27,7 +27,7 @@ const (
 
 const usage = `gar — o agente registra, o humano roda, o agente lê o resultado.
 
-  gar add [--why s] [--expect s] [--from s] [--json] -- <cmd> [<cmd>...]
+  gar add [--why s] [--expect s] [--from s] [--timeout dur] [--json] -- <cmd> [<cmd>...]
   gar run [<id>] [--yes] [--again]     (só humano: exige TTY; sem id escolhe
                                        com ↑/↓ e Enter entre os pendentes do workspace)
   gar wait <id> [--timeout dur]
@@ -144,6 +144,7 @@ func cmdAdd(st Store, args []string) int {
 	expect := fs.String("expect", "", "o que se espera ver")
 	from := fs.String("from", os.Getenv("GAR_FROM"), "quem registrou (padrão $GAR_FROM)")
 	asJSON := fs.Bool("json", false, "imprime o registro em JSON")
+	timeout := fs.Duration("timeout", defaultStepTimeout, "limite de cada passo (ex.: 10m); estourou, o passo falha e o caso para")
 	flagArgs, steps := args, []string(nil)
 	for i, a := range args {
 		if a == "--" {
@@ -163,11 +164,16 @@ func cmdAdd(st Store, args []string) int {
 		fmt.Fprintln(os.Stderr, "gar add: nenhum passo; use gar add -- '<cmd>' ['<cmd>'...]")
 		return exitUsage
 	}
+	if *timeout <= 0 {
+		fmt.Fprintln(os.Stderr, "gar add: --timeout precisa ser maior que zero")
+		return exitUsage
+	}
 	cwd, _ := os.Getwd()
 	host, _ := os.Hostname()
 	r := &Run{
 		Status: StatusPending, CreatedAt: time.Now(), CreatedBy: *from,
 		Why: *why, Expect: *expect, Cwd: cwd, Host: host, Workspace: detectWorkspace(),
+		StepTimeout: timeout.String(),
 	}
 	for _, c := range steps {
 		r.Steps = append(r.Steps, Step{Cmd: c, Status: StatusPending})

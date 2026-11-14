@@ -34,8 +34,8 @@ O `gar add` grava em `workspace` onde o agente estava; o `gar run` sem id usa a 
 
 | Comando | O que faz |
 |---|---|
-| `gar add [--why s] [--expect s] [--from s] [--json] -- <cmd>...` | Registra um caso; cada argumento depois de `--` é um passo. `--from` padrão: `$GAR_FROM`. |
-| `gar run [<id>] [--yes] [--again]` | Só humano: exige TTY em stdin e stdout. Sem id: seletor com os pendentes do workspace, mais antigo primeiro; `Enter` já confirma. Com id: mostra os passos e pergunta `[y/N]` (`--yes` pula). `--again` roda de novo um caso terminado. Responder não cancela o caso. |
+| `gar add [--why s] [--expect s] [--from s] [--timeout dur] [--json] -- <cmd>...` | Registra um caso; cada argumento depois de `--` é um passo. `--from` padrão: `$GAR_FROM`. `--timeout` limita cada passo (padrão `10m`): estourou, o passo fica `failed` com `reason: "timeout"` e exit 124, os seguintes são pulados e o `wait` volta. Casos antigos sem o campo usam o padrão. |
+| `gar run [<id>] [--yes] [--again]` | Só humano: exige TTY em stdin e stdout. Sem id: seletor com os pendentes do workspace, mais antigo primeiro; `Enter` já confirma. Com id: mostra os passos e pergunta `[y/N]` (`--yes` pula). `--again` roda de novo um caso terminado. Responder não cancela o caso. Só um `run` por vez (flock em `$GAR_HOME/run.lock`): o segundo diz qual caso está rodando, há quanto tempo e o pid, e sai com 4. |
 | `gar wait <id> [--timeout dur]` | Espera o caso terminar (poll de 500 ms) e imprime o JSON. Sem timeout padrão. |
 | `gar show <id> [--json]` | Resumo: passo, exit, duração, últimas linhas da saída. |
 | `gar ls [--status s] [--limit n]` | Lista os casos, mais novos primeiro (padrão 20). |
@@ -50,10 +50,10 @@ O `gar add` grava em `workspace` onde o agente estava; o `gar run` sem id usa a 
 | 1 | `wait` com caso `failed`; erro interno |
 | 2 | `wait` com caso `cancelled`; `run` respondido com não |
 | 3 | `sql` sem `duckdb` no PATH |
-| 4 | caso não existe, ou o status não permite (ex.: `run` em caso já terminado sem `--again`, `cancel` fora de `pending`) |
+| 4 | caso não existe, ou o status não permite (ex.: `run` em caso já terminado sem `--again`, `cancel` fora de `pending`); `run` com outro `run` ativo |
 | 5 | `run` sem TTY em stdin ou stdout |
 | 64 | uso errado |
-| 124 | `wait` estourou o `--timeout` |
+| 124 | `wait` estourou o `--timeout`; `run` com passo que estourou o timeout por passo |
 | 128+n | `run` interrompido pelo sinal n (SIGINT → 130, SIGTERM → 143): caso fica `cancelled` |
 
 O `run` sai com o exit do último passo que rodou.
