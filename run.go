@@ -37,7 +37,7 @@ type runner struct {
 
 func cmdRun(st Store, args []string) int {
 	fs := newFlags("run")
-	yes := fs.Bool("yes", false, "não pergunta [y/N] (o TTY continua obrigatório)")
+	yes := fs.Bool("yes", false, "não pergunta [Y/n] (o TTY continua obrigatório)")
 	again := fs.Bool("again", false, "roda de novo um caso já terminado (zera os passos)")
 	pos, err := parseArgs(fs, args)
 	if errors.Is(err, flag.ErrHelp) {
@@ -99,12 +99,12 @@ func cmdRun(st Store, args []string) int {
 
 	rn := &runner{st: st, rec: rec, stdinFd: stdinFd, step: -1}
 	sigCh := make(chan os.Signal, 4)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGWINCH)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGWINCH)
 	go rn.handleSignals(sigCh)
 
 	printPlan(rec)
 	// Enter in the picker already confirmed the case.
-	if !*yes && !picked && !confirm("Rodar? [y/N] ") {
+	if !*yes && !picked && !confirm("Rodar? [Y/n] ") {
 		rn.mu.Lock()
 		defer rn.mu.Unlock()
 		rn.finished = true
@@ -119,7 +119,7 @@ func cmdRun(st Store, args []string) int {
 		return exitCancelled
 	}
 
-	// Sequential cases queue behind each other; the picker and [y/N] hold nothing.
+	// Sequential cases queue behind each other; the picker and [Y/n] hold nothing.
 	if !rec.Parallel {
 		lock, err := queueRunLock(st, id)
 		if err != nil {
@@ -140,7 +140,7 @@ func cmdRun(st Store, args []string) int {
 			return fmt.Errorf("caso %d está %s; não rodei: %w", id, r.Status, errState)
 		}
 		now := time.Now()
-		r.RanAt = &now
+		r.RanAt, r.RunBy, r.RunPID = &now, runnerID(), os.Getpid()
 		return r.SetStatus(StatusRunning)
 	})
 	if err != nil {
@@ -221,7 +221,7 @@ func printPlan(r *Run) {
 }
 
 // confirm reads one line straight from fd 0 (no bufio: leftover bytes would
-// be lost to the stdin forwarder).
+// be lost to the stdin forwarder). Empty answer means yes.
 func confirm(prompt string) bool {
 	fmt.Print(prompt)
 	var line []byte
@@ -239,10 +239,23 @@ func confirm(prompt string) bool {
 		}
 	}
 	switch strings.ToLower(strings.TrimSpace(string(line))) {
-	case "y", "yes", "s", "sim":
+	case "", "y", "yes", "s", "sim":
 		return true
 	}
 	return false
+}
+
+// runnerID says who took a case, in terms the human recognizes: the pid, the
+// workspace and, inside the Herdr app, the terminal.
+func runnerID() string {
+	s := fmt.Sprintf("pid %d", os.Getpid())
+	if ws := detectWorkspace(); ws != "" {
+		s += " · " + ws
+	}
+	if t := os.Getenv("HC_TERMINAL_ID"); t != "" {
+		s += " · terminal " + t
+	}
+	return s
 }
 
 func childShell() string {

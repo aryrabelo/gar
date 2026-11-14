@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -183,6 +185,11 @@ func TestParallelRunSkipsQueue(t *testing.T) {
 	if got := showCase(t, home, busy.ID).Status; got != StatusRunning {
 		t.Fatalf("o sequencial devia seguir running, está %s", got)
 	}
+	ls, _ := gar(t, home, "ls")
+	want := regexp.MustCompile(`(?m)^` + strconv.Itoa(busy.ID) + `\s+running\s+pid \d+ · ws-teste\s`)
+	if !want.MatchString(ls) || !regexp.MustCompile(`(?m)^`+strconv.Itoa(par.ID)+`\s+done\s+-\s`).MatchString(ls) {
+		t.Fatalf("ls não mostra quem roda: %s", ls)
+	}
 	if out, _ := gar(t, home, "show", strconv.Itoa(par.ID)); !strings.Contains(out, "paralelo: roda junto") {
 		t.Fatalf("show não diz que é paralelo: %s", out)
 	}
@@ -239,5 +246,40 @@ func TestBareWaitWaitsRunning(t *testing.T) {
 	}
 	if code != 0 || r.ID != mine.ID || r.Status != StatusDone || !strings.Contains(r.Steps[1].Output, "fim-do-caso") {
 		t.Fatalf("wait exit %d, caso %d %s", code, r.ID, r.Status)
+	}
+}
+
+// A live run can't be cancelled; once its gar run dies (SIGKILL), cancel clears the orphan.
+func TestCancelOrphanRunning(t *testing.T) {
+	home := t.TempDir()
+	r := addCase(t, home, "sleep 30", "echo nunca")
+	run, _ := startRun(t, home, strconv.Itoa(r.ID), "--yes")
+	waitStatus(t, home, r.ID, StatusRunning)
+	if out, code := gar(t, home, "cancel", strconv.Itoa(r.ID)); code != exitState {
+		t.Fatalf("cancel com run vivo: exit %d: %s", code, out)
+	}
+	run.Process.Kill()
+	run.Wait()
+	if out, code := gar(t, home, "cancel", strconv.Itoa(r.ID)); code != 0 {
+		t.Fatalf("cancel do órfão: exit %d: %s", code, out)
+	}
+	got := showCase(t, home, r.ID)
+	if got.Status != StatusCancelled || got.Steps[0].Reason != "orphan" || got.Steps[1].Status != StepSkipped {
+		t.Fatalf("órfão: %+v", got)
+	}
+}
+
+// Closing the terminal (SIGHUP) marks the case cancelled instead of leaving it running.
+func TestHangupCancelsCase(t *testing.T) {
+	home := t.TempDir()
+	r := addCase(t, home, "sleep 30")
+	run, _ := startRun(t, home, strconv.Itoa(r.ID), "--yes")
+	waitStatus(t, home, r.ID, StatusRunning)
+	run.Process.Signal(syscall.SIGHUP)
+	if c := exitOf(t, run.Wait()); c != 128+int(syscall.SIGHUP) {
+		t.Fatalf("exit %d", c)
+	}
+	if got := showCase(t, home, r.ID); got.Status != StatusCancelled {
+		t.Fatalf("caso %s depois do SIGHUP", got.Status)
 	}
 }

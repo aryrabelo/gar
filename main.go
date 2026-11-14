@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 )
@@ -363,7 +364,7 @@ func cmdLs(st Store, args []string) int {
 		return fail(exitFailed, err)
 	}
 	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "ID\tSTATUS\tCRIADO\tWHY\tPASSO")
+	fmt.Fprintln(tw, "ID\tSTATUS\tQUEM RODA\tCRIADO\tWHY\tPASSO")
 	n := 0
 	for _, r := range runs {
 		if *status != "" && r.Status != *status {
@@ -380,11 +381,25 @@ func cmdLs(st Store, args []string) int {
 				first = fmt.Sprintf("%s (+%d)", shorten(first, 40), len(r.Steps)-1)
 			}
 		}
-		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\n", r.ID, r.Status,
+		who := "-"
+		if r.Status == StatusRunning && r.RunBy != "" {
+			who = r.RunBy
+		}
+		fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.Status, who,
 			r.CreatedAt.Format("01-02 15:04"), shorten(r.Why, 40), shorten(first, 48))
 	}
 	tw.Flush()
 	return 0
+}
+
+// runnerAlive reports whether the gar run that took a case still exists. Old
+// cases recorded no pid: treated as dead, since every live run now records one.
+func runnerAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 func cmdCancel(st Store, args []string) int {
@@ -393,13 +408,21 @@ func cmdCancel(st Store, args []string) int {
 		return code
 	}
 	_, err := st.Update(id, func(r *Run) error {
-		if r.Status != StatusPending {
-			return fmt.Errorf("caso %d está %s; só caso pending pode ser cancelado: %w", id, r.Status, errState)
+		switch {
+		case r.Status == StatusRunning && runnerAlive(r.RunPID):
+			return fmt.Errorf("caso %d está rodando (pid %d vivo); pare o gar run dele: %w", id, r.RunPID, errState)
+		case r.Status != StatusPending && r.Status != StatusRunning:
+			return fmt.Errorf("caso %d está %s; só caso pending ou running órfão pode ser cancelado: %w", id, r.Status, errState)
 		}
 		now := time.Now()
 		r.FinishedAt = &now
 		for i := range r.Steps {
-			r.Steps[i].Status = StepSkipped
+			switch r.Steps[i].Status {
+			case StatusRunning:
+				r.Steps[i].Status, r.Steps[i].FinishedAt, r.Steps[i].Reason = StatusCancelled, &now, "orphan"
+			case StatusPending:
+				r.Steps[i].Status = StepSkipped
+			}
 		}
 		return r.SetStatus(StatusCancelled)
 	})
