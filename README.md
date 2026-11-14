@@ -34,9 +34,9 @@ O `gar add` grava em `workspace` onde o agente estava; o `gar run` sem id usa a 
 
 | Comando | O que faz |
 |---|---|
-| `gar add [--why s] [--expect s] [--from s] [--timeout dur] [--json] -- <cmd>...` | Registra um caso; cada argumento depois de `--` é um passo. `--from` padrão: `$GAR_FROM`. `--timeout` limita cada passo (padrão `10m`): estourou, o passo fica `failed` com `reason: "timeout"` e exit 124, os seguintes são pulados e o `wait` volta. Casos antigos sem o campo usam o padrão. |
-| `gar run [<id>] [--yes] [--again]` | Só humano: exige TTY em stdin e stdout. Sem id: seletor com os pendentes do workspace, mais antigo primeiro; `Enter` já confirma. Com id: mostra os passos e pergunta `[y/N]` (`--yes` pula). `--again` roda de novo um caso terminado. Responder não cancela o caso. Só um `run` por vez (flock em `$GAR_HOME/run.lock`): o segundo diz qual caso está rodando, há quanto tempo e o pid, e sai com 4. |
-| `gar wait <id> [--timeout dur]` | Espera o caso terminar (poll de 500 ms) e imprime o JSON. Sem timeout padrão. |
+| `gar add [--why s] [--expect s] [--from s] [--timeout dur] [--parallel] [--json] -- <cmd>...` | Registra um caso; cada argumento depois de `--` é um passo. `--from` padrão: `$GAR_FROM`. `--timeout` limita cada passo (padrão `10m`): estourou, o passo fica `failed` com `reason: "timeout"` e exit 124, os seguintes são pulados e o `wait` volta. Casos antigos sem o campo usam o padrão. `--parallel` marca o caso como paralelo (`"parallel": true`): o `run` dele não entra na fila e roda junto de qualquer outro. |
+| `gar run [<id>] [--yes] [--again]` | Só humano: exige TTY em stdin e stdout. Sem id: seletor com os pendentes do workspace, mais antigo primeiro; `Enter` já confirma. Com id: mostra os passos e pergunta `[y/N]` (`--yes` pula). `--again` roda de novo um caso terminado. Responder não cancela o caso. Casos sequenciais (o padrão) rodam um por vez: depois da escolha/confirmação o `run` pega o flock de `$GAR_HOME/run.lock`; ocupado, imprime `gar: na fila atrás do caso <id> (há <t>, pid <p>); espera ele terminar (Ctrl-C desiste)` e espera. Seletor e `[y/N]` não seguram a fila. Ctrl-C na fila cancela o caso (fica `cancelled`, exit 130), a menos que outro `run` já o tenha pego. Caso já `running` é recusado antes da fila (exit 4); dois `run` esperando o mesmo caso: o segundo, ao sair da fila, diz que o caso já rodou (exit 4). Casos `--parallel` não entram na fila. |
+| `gar wait [<id>] [--timeout dur]` | Espera o caso terminar (poll de 500 ms) e imprime o JSON. Sem timeout padrão. Sem id: espera os casos `running` agora no workspace (o mesmo escopo do seletor do `run`; sem workspace, todos). Um caso: saída e exit iguais a `gar wait <id>`. Vários: array JSON, exit 0 só se todos `done`, senão o exit do primeiro que não terminou `done` (124 se ainda não terminou no timeout). Nenhum `running`: exit 4. |
 | `gar show <id> [--json]` | Resumo: passo, exit, duração, últimas linhas da saída. |
 | `gar ls [--status s] [--limit n]` | Lista os casos, mais novos primeiro (padrão 20). |
 | `gar cancel <id>` | Cancela um caso `pending`. |
@@ -50,7 +50,7 @@ O `gar add` grava em `workspace` onde o agente estava; o `gar run` sem id usa a 
 | 1 | `wait` com caso `failed`; erro interno |
 | 2 | `wait` com caso `cancelled`; `run` respondido com não |
 | 3 | `sql` sem `duckdb` no PATH |
-| 4 | caso não existe, ou o status não permite (ex.: `run` em caso já terminado sem `--again`, `cancel` fora de `pending`); `run` com outro `run` ativo |
+| 4 | caso não existe, ou o status não permite (ex.: `run` em caso já terminado sem `--again`, `cancel` fora de `pending`); `wait` sem id sem caso `running` |
 | 5 | `run` sem TTY em stdin ou stdout |
 | 64 | uso errado |
 | 124 | `wait` estourou o `--timeout`; `run` com passo que estourou o timeout por passo |

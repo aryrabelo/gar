@@ -21,12 +21,12 @@ func (r *Run) stepTimeout() time.Duration {
 	return defaultStepTimeout
 }
 
-// runLock is held for the whole life of one gar run, so a second run says who
-// is ahead of it instead of piling up silently. The kernel drops the flock if
-// the process dies, so a crash never leaves the queue stuck.
+// runLock serializes sequential cases: it is taken only after the human chose
+// and confirmed a case, and held while that case runs. A second sequential run
+// says who is ahead of it and waits. The kernel drops the flock if the process
+// dies, so a crash never leaves the queue stuck.
 type runLock struct {
-	f     *os.File
-	owner runOwner
+	f *os.File
 }
 
 type runOwner struct {
@@ -35,52 +35,46 @@ type runOwner struct {
 	Started time.Time `json:"started"`
 }
 
-func acquireRunLock(st Store) (*runLock, error) {
+// queueRunLock takes the run lock for case id, blocking behind the current
+// holder (after printing who it is) until it is free.
+func queueRunLock(st Store, id int) (*runLock, error) {
 	f, err := os.OpenFile(filepath.Join(st.Home, "run.lock"), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
 		return nil, err
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		defer f.Close()
 		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			f.Close()
 			return nil, err
 		}
 		b, _ := io.ReadAll(f)
-		return nil, busyErr(b)
+		fmt.Fprintln(os.Stderr, queueLine(b))
+		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			f.Close()
+			return nil, err
+		}
 	}
-	l := &runLock{f: f, owner: runOwner{PID: os.Getpid(), Started: time.Now()}}
-	return l, l.write()
-}
-
-func busyErr(b []byte) error {
-	var o runOwner
-	if json.Unmarshal(b, &o) != nil {
-		return fmt.Errorf("outro gar run está ativo; não rodei: %w", errState)
+	l := &runLock{f: f}
+	b, err := json.Marshal(runOwner{PID: os.Getpid(), Case: id, Started: time.Now()})
+	if err == nil {
+		err = f.Truncate(0)
 	}
-	what := "escolhendo caso"
-	if o.Case != 0 {
-		what = fmt.Sprintf("caso %d", o.Case)
+	if err == nil {
+		_, err = f.WriteAt(b, 0)
 	}
-	return fmt.Errorf("outro gar run está ativo (%s, há %s, pid %d); espere ele terminar e rode de novo: %w",
-		what, time.Since(o.Started).Round(time.Second), o.PID, errState)
-}
-
-// claim records which case this run took.
-func (l *runLock) claim(id int) error {
-	l.owner.Case = id
-	return l.write()
-}
-
-func (l *runLock) write() error {
-	b, err := json.Marshal(l.owner)
 	if err != nil {
-		return err
+		fmt.Fprintln(os.Stderr, "gar: gravando run.lock:", err)
 	}
-	if err := l.f.Truncate(0); err != nil {
-		return err
+	return l, nil
+}
+
+func queueLine(b []byte) string {
+	var o runOwner
+	if json.Unmarshal(b, &o) != nil || o.Case == 0 {
+		return "gar: na fila atrás de outro gar run; espera ele terminar (Ctrl-C desiste)"
 	}
-	_, err = l.f.WriteAt(b, 0)
-	return err
+	return fmt.Sprintf("gar: na fila atrás do caso %d (há %s, pid %d); espera ele terminar (Ctrl-C desiste)",
+		o.Case, time.Since(o.Started).Round(time.Second), o.PID)
 }
 
 func (l *runLock) release() {

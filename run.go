@@ -61,11 +61,6 @@ func cmdRun(st Store, args []string) int {
 			"Agente: use gar wait <id> para esperar o resultado.\n")
 		return exitNoTTY
 	}
-	lock, err := acquireRunLock(st)
-	if err != nil {
-		return loadErr(err)
-	}
-	defer lock.release()
 	picked := false
 	if id == 0 {
 		runs, err := st.List()
@@ -73,7 +68,7 @@ func cmdRun(st Store, args []string) int {
 			return fail(exitFailed, err)
 		}
 		ws := detectWorkspace()
-		cases := pendingIn(runs, ws)
+		cases := casesIn(runs, ws, StatusPending)
 		if len(cases) == 0 {
 			where := "nenhum workspace detectado"
 			if ws != "" {
@@ -124,6 +119,15 @@ func cmdRun(st Store, args []string) int {
 		return exitCancelled
 	}
 
+	// Sequential cases queue behind each other; the picker and [y/N] hold nothing.
+	if !rec.Parallel {
+		lock, err := queueRunLock(st, id)
+		if err != nil {
+			return fail(exitFailed, err)
+		}
+		defer lock.release()
+	}
+
 	// Claim the case under the store lock: a concurrent cancel or run loses.
 	rn.mu.Lock()
 	rec, err = st.Update(id, func(r *Run) error {
@@ -145,9 +149,6 @@ func cmdRun(st Store, args []string) int {
 		return loadErr(err)
 	}
 	rn.rec = rec
-	if err := lock.claim(id); err != nil {
-		fmt.Fprintln(os.Stderr, "gar: gravando run.lock:", err)
-	}
 	rn.mu.Unlock()
 
 	go rn.forwardStdin()
@@ -202,6 +203,9 @@ func printPlan(r *Run) {
 		fmt.Printf(" (de %s)", r.CreatedBy)
 	}
 	fmt.Println()
+	if r.Parallel {
+		fmt.Println("paralelo: roda junto de outros casos, sem fila")
+	}
 	if r.Why != "" {
 		fmt.Println("por quê:", r.Why)
 	}
@@ -402,7 +406,13 @@ func (rn *runner) cancel(sig syscall.Signal) {
 	}
 	rn.restoreTerm()
 	rec := rn.rec
-	if rec.Status == StatusPending || rec.Status == StatusRunning {
+	if rec.Status == StatusPending {
+		// Not claimed yet (confirming or queued): another run may own the case
+		// by now, so cancel only if the stored case is still pending.
+		if _, err := rn.st.Update(rec.ID, cancelPending); err == nil {
+			fmt.Fprintf(os.Stderr, "\ngar: caso %d cancelado (%s)\n", rec.ID, sig)
+		}
+	} else if rec.Status == StatusRunning {
 		now := time.Now()
 		for i := range rec.Steps {
 			s := &rec.Steps[i]

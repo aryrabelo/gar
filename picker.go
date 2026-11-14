@@ -8,13 +8,13 @@ import (
 	"golang.org/x/term"
 )
 
-// pendingIn returns the workspace's pending cases, oldest first (FIFO).
-// Without a workspace every pending case qualifies.
-func pendingIn(runs []*Run, ws string) []*Run {
+// casesIn returns the workspace's cases in status, oldest first (FIFO).
+// Without a workspace every case in status qualifies.
+func casesIn(runs []*Run, ws, status string) []*Run {
 	var out []*Run
 	for i := len(runs) - 1; i >= 0; i-- { // List is newest first
 		r := runs[i]
-		if r.Status == StatusPending && (ws == "" || r.Workspace == ws) {
+		if r.Status == status && (ws == "" || r.Workspace == ws) {
 			out = append(out, r)
 		}
 	}

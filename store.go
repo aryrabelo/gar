@@ -54,7 +54,9 @@ type Run struct {
 	FinishedAt *time.Time `json:"finished_at"`
 	// StepTimeout caps each step (Go duration, e.g. "10m"); empty = defaultStepTimeout.
 	StepTimeout string `json:"step_timeout,omitempty"`
-	Steps       []Step `json:"steps"`
+	// Parallel cases skip the run queue and run alongside any other case.
+	Parallel bool   `json:"parallel,omitempty"`
+	Steps    []Step `json:"steps"`
 }
 
 var (

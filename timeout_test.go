@@ -108,38 +108,136 @@ func TestStepTimeoutFailsCase(t *testing.T) {
 	}
 }
 
-// A second gar run while one is active refuses at once, naming the case ahead.
-func TestConcurrentRunRefuses(t *testing.T) {
-	home := t.TempDir()
-	busy := addCase(t, home, "sleep 3")
-	next := addCase(t, home, "echo segundo-rodou")
-
-	first, _ := startRun(t, home, strconv.Itoa(busy.ID), "--yes")
+// waitStatus polls until case id reaches status.
+func waitStatus(t *testing.T, home string, id int, status string) {
+	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
-	for showCase(t, home, busy.ID).Status != StatusRunning {
+	for showCase(t, home, id).Status != status {
 		if time.Now().After(deadline) {
-			t.Fatal("primeiro run não começou")
+			t.Fatalf("caso %d não chegou a %s", id, status)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+func addParallel(t *testing.T, home string, steps ...string) *Run {
+	t.Helper()
+	out, code := gar(t, home, append([]string{"add", "--parallel", "--json", "--"}, steps...)...)
+	if code != 0 {
+		t.Fatalf("add exit %d: %s", code, out)
+	}
+	var r Run
+	if err := json.Unmarshal([]byte(out), &r); err != nil || !r.Parallel {
+		t.Fatalf("add --parallel: %v %+v", err, r)
+	}
+	return &r
+}
+
+// A second sequential run waits in the queue, naming the case ahead, and runs after it.
+func TestSequentialRunQueues(t *testing.T) {
+	home := t.TempDir()
+	busy := addCase(t, home, "sleep 2")
+	next := addCase(t, home, "echo segundo-rodou")
+
+	first, _ := startRun(t, home, strconv.Itoa(busy.ID), "--yes")
+	waitStatus(t, home, busy.ID, StatusRunning)
 
 	second, screen := startRun(t, home, strconv.Itoa(next.ID), "--yes")
-	if c := exitOf(t, second.Wait()); c != exitState {
-		t.Fatalf("segundo run exit %d, quer %d; tela: %q", c, exitState, screen())
-	}
-	want := "outro gar run está ativo (caso " + strconv.Itoa(busy.ID) + ", há "
-	if !strings.Contains(screen(), want) {
-		t.Fatalf("tela sem %q: %q", want, screen())
+	want := "na fila atrás do caso " + strconv.Itoa(busy.ID) + " (há "
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(screen(), want) {
+		if time.Now().After(deadline) {
+			t.Fatalf("tela sem %q: %q", want, screen())
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if got := showCase(t, home, next.ID); got.Status != StatusPending {
-		t.Fatalf("segundo caso %s, devia seguir pending", got.Status)
+		t.Fatalf("caso na fila está %s com o outro rodando", got.Status)
 	}
 	if c := exitOf(t, first.Wait()); c != 0 {
 		t.Fatalf("primeiro run exit %d", c)
 	}
-	// Lock released: the queued case runs now.
-	again, scr := startRun(t, home, strconv.Itoa(next.ID), "--yes")
-	if c := exitOf(t, again.Wait()); c != 0 || !strings.Contains(scr(), "segundo-rodou") {
-		t.Fatalf("depois do primeiro, exit %d; tela: %q", c, scr())
+	if c := exitOf(t, second.Wait()); c != 0 || !strings.Contains(screen(), "\nsegundo-rodou") {
+		t.Fatalf("segundo run exit %d; tela: %q", c, screen())
+	}
+	a, b := showCase(t, home, busy.ID), showCase(t, home, next.ID)
+	if b.Status != StatusDone || b.RanAt == nil || a.FinishedAt == nil || b.RanAt.Before(*a.FinishedAt) {
+		t.Fatalf("segundo devia rodar depois do primeiro: A fim %v, B %s início %v", a.FinishedAt, b.Status, b.RanAt)
+	}
+}
+
+// A --parallel case skips the queue and finishes while a sequential one still runs.
+func TestParallelRunSkipsQueue(t *testing.T) {
+	home := t.TempDir()
+	busy := addCase(t, home, "sleep 5")
+	par := addParallel(t, home, "echo par-ok")
+
+	first, _ := startRun(t, home, strconv.Itoa(busy.ID), "--yes")
+	waitStatus(t, home, busy.ID, StatusRunning)
+
+	second, screen := startRun(t, home, strconv.Itoa(par.ID), "--yes")
+	if c := exitOf(t, second.Wait()); c != 0 || strings.Contains(screen(), "na fila") ||
+		!strings.Contains(screen(), "\npar-ok") {
+		t.Fatalf("paralelo exit %d; tela: %q", c, screen())
+	}
+	if got := showCase(t, home, busy.ID).Status; got != StatusRunning {
+		t.Fatalf("o sequencial devia seguir running, está %s", got)
+	}
+	if out, _ := gar(t, home, "show", strconv.Itoa(par.ID)); !strings.Contains(out, "paralelo: roda junto") {
+		t.Fatalf("show não diz que é paralelo: %s", out)
+	}
+	if c := exitOf(t, first.Wait()); c != 0 {
+		t.Fatalf("primeiro run exit %d", c)
+	}
+}
+
+// An open picker holds no lock: another gar run <id> runs right away.
+func TestPickerHoldsNothing(t *testing.T) {
+	home := t.TempDir()
+	addCase(t, home, "echo no-seletor")
+	other := addCase(t, home, "echo outro-rodou")
+
+	picker, pickScreen := startRun(t, home)
+	deadline := time.Now().Add(10 * time.Second)
+	for !strings.Contains(pickScreen(), "Enter roda") {
+		if time.Now().After(deadline) {
+			t.Fatalf("sem seletor; tela: %q", pickScreen())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	run, screen := startRun(t, home, strconv.Itoa(other.ID), "--yes")
+	if c := exitOf(t, run.Wait()); c != 0 || strings.Contains(screen(), "na fila") {
+		t.Fatalf("run com seletor aberto: exit %d; tela: %q", c, screen())
+	}
+	picker.Process.Kill()
+	picker.Wait()
+}
+
+// Bare gar wait waits for this workspace's running cases; none running is exit 4.
+func TestBareWaitWaitsRunning(t *testing.T) {
+	home := t.TempDir()
+	if out, code := gar(t, home, "wait"); code != exitState {
+		t.Fatalf("wait sem running: exit %d, quer %d: %s", code, exitState, out)
+	}
+	// Running in another workspace: must not be waited for.
+	elsewhere := addIn(t, home, "outro", "sleep 30")
+	far, _ := startRun(t, home, strconv.Itoa(elsewhere), "--yes")
+	t.Cleanup(func() { far.Process.Kill(); far.Wait() })
+	waitStatus(t, home, elsewhere, StatusRunning)
+
+	mine := addParallel(t, home, "sleep 1", "echo fim-do-caso")
+	run, _ := startRun(t, home, strconv.Itoa(mine.ID), "--yes")
+	waitStatus(t, home, mine.ID, StatusRunning)
+
+	out, code := gar(t, home, "wait", "--timeout", "20s")
+	if c := exitOf(t, run.Wait()); c != 0 {
+		t.Fatalf("run exit %d", c)
+	}
+	var r Run
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("wait devia imprimir um objeto: %v\n%s", err, out)
+	}
+	if code != 0 || r.ID != mine.ID || r.Status != StatusDone || !strings.Contains(r.Steps[1].Output, "fim-do-caso") {
+		t.Fatalf("wait exit %d, caso %d %s", code, r.ID, r.Status)
 	}
 }
