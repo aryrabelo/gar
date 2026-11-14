@@ -36,7 +36,8 @@ type runOwner struct {
 }
 
 // queueRunLock takes the run lock for case id, blocking behind the current
-// holder (after printing who it is) until it is free.
+// holder (after printing who it is) until it is free. While it waits, the case
+// carries a queued mark; the claim that follows removes it.
 func queueRunLock(st Store, id int) (*runLock, error) {
 	f, err := os.OpenFile(filepath.Join(st.Home, "run.lock"), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
@@ -48,8 +49,14 @@ func queueRunLock(st Store, id int) (*runLock, error) {
 			return nil, err
 		}
 		b, _ := io.ReadAll(f)
-		fmt.Fprintln(os.Stderr, queueLine(b))
+		var o runOwner
+		if json.Unmarshal(b, &o) != nil {
+			o = runOwner{}
+		}
+		markQueued(st, id, o.Case) // before the line: whoever sees it can read the mark
+		fmt.Fprintln(os.Stderr, queueLine(o))
 		if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+			clearQueued(st, id)
 			f.Close()
 			return nil, err
 		}
@@ -68,13 +75,40 @@ func queueRunLock(st Store, id int) (*runLock, error) {
 	return l, nil
 }
 
-func queueLine(b []byte) string {
-	var o runOwner
-	if json.Unmarshal(b, &o) != nil || o.Case == 0 {
+func queueLine(o runOwner) string {
+	if o.Case == 0 {
 		return "gar: na fila atrás de outro gar run; espera ele terminar (Ctrl-C desiste)"
 	}
 	return fmt.Sprintf("gar: na fila atrás do caso %d (há %s, pid %d); espera ele terminar (Ctrl-C desiste)",
 		o.Case, time.Since(o.Started).Round(time.Second), o.PID)
+}
+
+// markQueued records in case id that this gar run waits behind case behind.
+func markQueued(st Store, id, behind int) {
+	_, err := st.Update(id, func(r *Run) error {
+		r.Queued = &Queued{PID: os.Getpid(), Behind: behind, Since: time.Now()}
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gar: gravando a fila no caso:", err)
+	}
+}
+
+var errUnchanged = errors.New("sem mudança")
+
+// clearQueued drops this gar run's queue mark from case id; another run's
+// mark stays.
+func clearQueued(st Store, id int) {
+	_, err := st.Update(id, func(r *Run) error {
+		if r.Queued == nil || r.Queued.PID != os.Getpid() {
+			return errUnchanged
+		}
+		r.Queued = nil
+		return nil
+	})
+	if err != nil && !errors.Is(err, errUnchanged) {
+		fmt.Fprintln(os.Stderr, "gar: limpando a fila do caso:", err)
+	}
 }
 
 func (l *runLock) release() {

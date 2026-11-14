@@ -59,8 +59,34 @@ type Run struct {
 	// StepTimeout caps each step (Go duration, e.g. "10m"); empty = defaultStepTimeout.
 	StepTimeout string `json:"step_timeout,omitempty"`
 	// Parallel cases skip the run queue and run alongside any other case.
-	Parallel bool   `json:"parallel,omitempty"`
-	Steps    []Step `json:"steps"`
+	Parallel bool `json:"parallel,omitempty"`
+	// Queued is set while a gar run waits for run.lock to start this case.
+	Queued *Queued `json:"queued,omitempty"`
+	Steps  []Step  `json:"steps"`
+}
+
+// Queued says which gar run waits in the run queue for a case, and behind whom.
+type Queued struct {
+	PID int `json:"pid"`
+	// Behind is the case holding run.lock (0 when the lock does not say).
+	Behind int       `json:"behind"`
+	Since  time.Time `json:"since"`
+}
+
+// queuedLive returns the queue mark of a pending case whose waiting gar run
+// still exists; a mark left by a killed run counts as absent.
+func (r *Run) queuedLive() *Queued {
+	if r.Status != StatusPending || r.Queued == nil || !runnerAlive(r.Queued.PID) {
+		return nil
+	}
+	return r.Queued
+}
+
+func (q *Queued) behindText() string {
+	if q.Behind == 0 {
+		return "na fila atrás de outro gar run"
+	}
+	return fmt.Sprintf("na fila atrás do %d", q.Behind)
 }
 
 var (
