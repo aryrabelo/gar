@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -18,9 +19,16 @@ import (
 
 // startRun launches `gar run <args>` in a real PTY; screen() returns what it printed.
 func startRun(t *testing.T, home string, args ...string) (*exec.Cmd, func() string) {
+	run, _, screen := startRunEnv(t, home, nil, args...)
+	return run, screen
+}
+
+// startRunEnv is startRun with extra environment entries (later ones win) that
+// also returns the PTY for typing keys.
+func startRunEnv(t *testing.T, home string, env []string, args ...string) (*exec.Cmd, *os.File, func() string) {
 	t.Helper()
 	run := exec.Command(garBin, append([]string{"run"}, args...)...)
-	run.Env = garEnv(home)
+	run.Env = append(garEnv(home), env...)
 	ptmx, err := pty.StartWithSize(run, &pty.Winsize{Rows: 40, Cols: 120})
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +48,7 @@ func startRun(t *testing.T, home string, args ...string) (*exec.Cmd, func() stri
 			}
 		}
 	}()
-	return run, func() string { mu.Lock(); defer mu.Unlock(); return screen.String() }
+	return run, ptmx, func() string { mu.Lock(); defer mu.Unlock(); return screen.String() }
 }
 
 func exitOf(t *testing.T, err error) int {

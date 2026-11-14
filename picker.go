@@ -23,6 +23,8 @@ func casesIn(runs []*Run, ws, status string) []*Run {
 
 // pickCase lets the human choose a case with ↑/↓ (or k/j) and Enter; Esc, q
 // and Ctrl-C give up. The oldest case starts selected. stdin must be a TTY.
+// In a Herdr dialog (GAR_HERDR_DIALOG=1) Esc only hides the dialog and the
+// picker keeps waiting; q, Ctrl-C and Ctrl-D still give up.
 func pickCase(cases []*Run, ws string) (*Run, error) {
 	fd := int(os.Stdin.Fd())
 	old, err := term.MakeRaw(fd)
@@ -39,6 +41,11 @@ func pickCase(cases []*Run, ws string) (*Run, error) {
 	if where == "" {
 		where = "todos os workspaces"
 	}
+	dialog := herdrDialog()
+	escHint := "Esc sai"
+	if dialog {
+		escHint = "Esc esconde · q sai"
+	}
 	sel, drawn := 0, 0
 	draw := func() {
 		var b strings.Builder
@@ -46,7 +53,7 @@ func pickCase(cases []*Run, ws string) (*Run, error) {
 			fmt.Fprintf(&b, "\x1b[%dA", drawn)
 		}
 		b.WriteString("\r\x1b[J")
-		lines := []string{fmt.Sprintf("gar · %d pendente(s) em %s · ↑/↓ escolhe · Enter roda · Esc sai", len(cases), where)}
+		lines := []string{fmt.Sprintf("gar · %d pendente(s) em %s · ↑/↓ escolhe · Enter roda · %s", len(cases), where, escHint)}
 		for i, r := range cases {
 			mark := "  "
 			if i == sel {
@@ -96,7 +103,14 @@ func pickCase(cases []*Run, ws string) (*Run, error) {
 		case "\r", "\n":
 			clear()
 			return cases[sel], nil
-		case "\x1b", "q", "\x03", "\x04":
+		case "\x1b":
+			if dialog {
+				_ = hideDialog() // failed: the picker stays, same as success
+				continue
+			}
+			clear()
+			return nil, nil
+		case "q", "\x03", "\x04":
 			clear()
 			return nil, nil
 		default:
