@@ -36,6 +36,8 @@ type Step struct {
 	DurationMs      int64      `json:"duration_ms"`
 	Output          string     `json:"output"`
 	OutputTruncated bool       `json:"output_truncated"`
+	// Reason says why a failed step stopped when it was not its own exit ("timeout").
+	Reason string `json:"reason,omitempty"`
 }
 
 type Run struct {
@@ -47,9 +49,14 @@ type Run struct {
 	Expect     string     `json:"expect"`
 	Cwd        string     `json:"cwd"`
 	Host       string     `json:"host"`
+	Workspace  string     `json:"workspace,omitempty"`
 	RanAt      *time.Time `json:"ran_at"`
 	FinishedAt *time.Time `json:"finished_at"`
-	Steps      []Step     `json:"steps"`
+	// StepTimeout caps each step (Go duration, e.g. "10m"); empty = defaultStepTimeout.
+	StepTimeout string `json:"step_timeout,omitempty"`
+	// Parallel cases skip the run queue and run alongside any other case.
+	Parallel bool   `json:"parallel,omitempty"`
+	Steps    []Step `json:"steps"`
 }
 
 var (

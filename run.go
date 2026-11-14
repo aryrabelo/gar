@@ -1,13 +1,17 @@
 package main
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -35,16 +39,52 @@ func cmdRun(st Store, args []string) int {
 	fs := newFlags("run")
 	yes := fs.Bool("yes", false, "não pergunta [y/N] (o TTY continua obrigatório)")
 	again := fs.Bool("again", false, "roda de novo um caso já terminado (zera os passos)")
-	id, code := oneID(fs, args)
-	if code >= 0 {
-		return code
+	pos, err := parseArgs(fs, args)
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	if err != nil || len(pos) > 1 {
+		fmt.Fprintln(os.Stderr, "gar run: informe no máximo um id")
+		return exitUsage
+	}
+	id := 0
+	if len(pos) == 1 {
+		if id, err = strconv.Atoi(pos[0]); err != nil {
+			fmt.Fprintf(os.Stderr, "gar run: id inválido %q\n", pos[0])
+			return exitUsage
+		}
 	}
 	stdinFd := int(os.Stdin.Fd())
 	if !term.IsTerminal(stdinFd) || !term.IsTerminal(int(os.Stdout.Fd())) {
-		fmt.Fprintf(os.Stderr, "gar run: stdin e stdout precisam ser um terminal (TTY).\n"+
-			"Este comando é para o humano rodar no terminal dele: ! gar run %d\n"+
-			"Agente: use gar wait %d para esperar o resultado.\n", id, id)
+		fmt.Fprint(os.Stderr, "gar run: stdin e stdout precisam ser um terminal (TTY).\n"+
+			"Este comando é para o humano rodar no terminal dele: ! gar run\n"+
+			"Agente: use gar wait <id> para esperar o resultado.\n")
 		return exitNoTTY
+	}
+	picked := false
+	if id == 0 {
+		runs, err := st.List()
+		if err != nil {
+			return fail(exitFailed, err)
+		}
+		ws := detectWorkspace()
+		cases := casesIn(runs, ws, StatusPending)
+		if len(cases) == 0 {
+			where := "nenhum workspace detectado"
+			if ws != "" {
+				where = ws
+			}
+			return fail(exitState, fmt.Errorf("nenhum caso pendente (%s); veja gar ls --status pending", where))
+		}
+		r, err := pickCase(cases, ws)
+		if err != nil {
+			return fail(exitFailed, err)
+		}
+		if r == nil {
+			fmt.Println("nada rodado")
+			return exitCancelled
+		}
+		id, picked = r.ID, true
 	}
 	rec, err := st.Load(id)
 	if err != nil {
@@ -63,7 +103,8 @@ func cmdRun(st Store, args []string) int {
 	go rn.handleSignals(sigCh)
 
 	printPlan(rec)
-	if !*yes && !confirm("Rodar? [y/N] ") {
+	// Enter in the picker already confirmed the case.
+	if !*yes && !picked && !confirm("Rodar? [y/N] ") {
 		rn.mu.Lock()
 		defer rn.mu.Unlock()
 		rn.finished = true
@@ -76,6 +117,15 @@ func cmdRun(st Store, args []string) int {
 		}
 		fmt.Println("nada rodado")
 		return exitCancelled
+	}
+
+	// Sequential cases queue behind each other; the picker and [y/N] hold nothing.
+	if !rec.Parallel {
+		lock, err := queueRunLock(st, id)
+		if err != nil {
+			return fail(exitFailed, err)
+		}
+		defer lock.release()
 	}
 
 	// Claim the case under the store lock: a concurrent cancel or run loses.
@@ -153,6 +203,9 @@ func printPlan(r *Run) {
 		fmt.Printf(" (de %s)", r.CreatedBy)
 	}
 	fmt.Println()
+	if r.Parallel {
+		fmt.Println("paralelo: roda junto de outros casos, sem fila")
+	}
 	if r.Why != "" {
 		fmt.Println("por quê:", r.Why)
 	}
@@ -227,7 +280,7 @@ func (rn *runner) runStep(i int) int {
 	if err != nil {
 		fmt.Fprintf(buf, "gar: não consegui iniciar o passo: %v\n", err)
 		rn.mu.Unlock()
-		return rn.finishStep(127)
+		return rn.finishStep(127, "")
 	}
 	_ = pty.InheritSize(os.Stdin, ptmx)
 	rn.child, rn.ptmx = c, ptmx
@@ -241,7 +294,16 @@ func (rn *runner) runStep(i int) int {
 		io.Copy(io.MultiWriter(os.Stdout, buf), ptmx) // EIO once the child side closes
 		close(copied)
 	}()
+	limit := rec.stepTimeout()
+	var timedOut atomic.Bool
+	timer := time.AfterFunc(limit, func() {
+		timedOut.Store(true)
+		pgid := c.Process.Pid // pty.Start makes the child a session leader
+		syscall.Kill(-pgid, syscall.SIGHUP)
+		time.AfterFunc(5*time.Second, func() { syscall.Kill(-pgid, syscall.SIGKILL) })
+	})
 	c.Wait()
+	timer.Stop()
 	// Drain what the child wrote; a background grandchild holding the PTY
 	// open must not hang us, so give up after a moment.
 	select {
@@ -254,7 +316,13 @@ func (rn *runner) runStep(i int) int {
 	rn.restoreTerm()
 	rn.child, rn.ptmx = nil, nil
 	rn.mu.Unlock()
-	return rn.finishStep(exitCode(c.ProcessState))
+	if timedOut.Load() {
+		msg := fmt.Sprintf("gar: passo estourou o timeout de %s; parei o caso\n", limit)
+		fmt.Fprint(os.Stderr, "\n"+msg)
+		fmt.Fprint(buf, msg)
+		return rn.finishStep(exitTimeout, "timeout")
+	}
+	return rn.finishStep(exitCode(c.ProcessState), "")
 }
 
 func exitCode(ps *os.ProcessState) int {
@@ -267,7 +335,7 @@ func exitCode(ps *os.ProcessState) int {
 	return ps.ExitCode()
 }
 
-func (rn *runner) finishStep(code int) int {
+func (rn *runner) finishStep(code int, reason string) int {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 	s := &rn.rec.Steps[rn.step]
@@ -275,7 +343,7 @@ func (rn *runner) finishStep(code int) int {
 	s.ExitCode, s.FinishedAt = &code, &now
 	s.DurationMs = now.Sub(rn.started).Milliseconds()
 	s.Output, s.OutputTruncated = rn.buf.Result()
-	s.Status = StatusDone
+	s.Status, s.Reason = StatusDone, reason
 	if code != 0 {
 		s.Status = StatusFailed
 	}
@@ -338,7 +406,13 @@ func (rn *runner) cancel(sig syscall.Signal) {
 	}
 	rn.restoreTerm()
 	rec := rn.rec
-	if rec.Status == StatusPending || rec.Status == StatusRunning {
+	if rec.Status == StatusPending {
+		// Not claimed yet (confirming or queued): another run may own the case
+		// by now, so cancel only if the stored case is still pending.
+		if _, err := rn.st.Update(rec.ID, cancelPending); err == nil {
+			fmt.Fprintf(os.Stderr, "\ngar: caso %d cancelado (%s)\n", rec.ID, sig)
+		}
+	} else if rec.Status == StatusRunning {
 		now := time.Now()
 		for i := range rec.Steps {
 			s := &rec.Steps[i]

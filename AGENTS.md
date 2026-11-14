@@ -4,7 +4,8 @@ Quando você precisa que o humano rode um comando (ssh bloqueado pelo guard, sen
 
 1. Registre: `gar add --why "<por quê>" [--expect "<o que deve aparecer>"] -- '<cmd1>' '<cmd2>'`.
    Cada argumento depois de `--` é um passo; eles rodam em ordem e param no primeiro que falhar.
-2. Diga ao humano a linha que o `add` imprimiu: `! gar run <id>`.
+2. Diga ao humano a linha que o `add` imprimiu. Dentro do bora ou do Herdr app ela é só `! gar run`:
+   o humano escolhe o caso com setas e Enter, sem copiar id. Fora deles vem `! gar run <id>`.
 3. Rode `gar wait <id>` em background (`--timeout` se quiser limite). Ele sai com o JSON do caso:
    exit 0 `done`, 1 `failed`, 2 `cancelled`, 124 timeout. Leia `steps[].exit_code` e `steps[].output`.
 

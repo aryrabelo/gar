@@ -27,9 +27,10 @@ const (
 
 const usage = `gar — o agente registra, o humano roda, o agente lê o resultado.
 
-  gar add [--why s] [--expect s] [--from s] [--json] -- <cmd> [<cmd>...]
-  gar run <id> [--yes] [--again]       (só humano: exige TTY)
-  gar wait <id> [--timeout dur]
+  gar add [--why s] [--expect s] [--from s] [--timeout dur] [--parallel] [--json] -- <cmd> [<cmd>...]
+  gar run [<id>] [--yes] [--again]     (só humano: exige TTY; sem id escolhe
+                                       com ↑/↓ e Enter entre os pendentes do workspace)
+  gar wait [<id>] [--timeout dur]      (sem id: espera os casos running do workspace)
   gar show <id> [--json]
   gar ls [--status s] [--limit n]
   gar cancel <id>
@@ -142,7 +143,9 @@ func cmdAdd(st Store, args []string) int {
 	why := fs.String("why", "", "por que o humano precisa rodar isto")
 	expect := fs.String("expect", "", "o que se espera ver")
 	from := fs.String("from", os.Getenv("GAR_FROM"), "quem registrou (padrão $GAR_FROM)")
+	parallel := fs.Bool("parallel", false, "o caso roda junto de outros, sem entrar na fila do gar run")
 	asJSON := fs.Bool("json", false, "imprime o registro em JSON")
+	timeout := fs.Duration("timeout", defaultStepTimeout, "limite de cada passo (ex.: 10m); estourou, o passo falha e o caso para")
 	flagArgs, steps := args, []string(nil)
 	for i, a := range args {
 		if a == "--" {
@@ -162,11 +165,16 @@ func cmdAdd(st Store, args []string) int {
 		fmt.Fprintln(os.Stderr, "gar add: nenhum passo; use gar add -- '<cmd>' ['<cmd>'...]")
 		return exitUsage
 	}
+	if *timeout <= 0 {
+		fmt.Fprintln(os.Stderr, "gar add: --timeout precisa ser maior que zero")
+		return exitUsage
+	}
 	cwd, _ := os.Getwd()
 	host, _ := os.Hostname()
 	r := &Run{
 		Status: StatusPending, CreatedAt: time.Now(), CreatedBy: *from,
-		Why: *why, Expect: *expect, Cwd: cwd, Host: host,
+		Why: *why, Expect: *expect, Cwd: cwd, Host: host, Workspace: detectWorkspace(),
+		StepTimeout: timeout.String(), Parallel: *parallel,
 	}
 	for _, c := range steps {
 		r.Steps = append(r.Steps, Step{Cmd: c, Status: StatusPending})
@@ -178,6 +186,10 @@ func cmdAdd(st Store, args []string) int {
 		printJSON(r)
 		return 0
 	}
+	if r.Workspace != "" {
+		fmt.Printf("caso %d registrado em %s\n[HUMAN] ! gar run\n", r.ID, r.Workspace)
+		return 0
+	}
 	fmt.Printf("caso %d registrado\n[HUMAN] ! gar run %d\n", r.ID, r.ID)
 	return 0
 }
@@ -185,36 +197,92 @@ func cmdAdd(st Store, args []string) int {
 func cmdWait(st Store, args []string) int {
 	fs := newFlags("wait")
 	timeout := fs.Duration("timeout", 0, "desiste depois de dur (ex.: 10m); 0 = sem limite")
-	id, code := oneID(fs, args)
-	if code >= 0 {
-		return code
+	pos, err := parseArgs(fs, args)
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	if err != nil {
+		return exitUsage
+	}
+	var ids []int
+	switch len(pos) {
+	case 0:
+		runs, err := st.List()
+		if err != nil {
+			return fail(exitFailed, err)
+		}
+		ws := detectWorkspace()
+		for _, r := range casesIn(runs, ws, StatusRunning) {
+			ids = append(ids, r.ID)
+		}
+		if len(ids) == 0 {
+			where := "nenhum workspace detectado"
+			if ws != "" {
+				where = ws
+			}
+			return fail(exitState, fmt.Errorf("nenhum caso running (%s); para um caso: gar wait <id>", where))
+		}
+	case 1:
+		id, err := strconv.Atoi(pos[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gar wait: id inválido %q\n", pos[0])
+			return exitUsage
+		}
+		ids = []int{id}
+	default:
+		fmt.Fprintln(os.Stderr, "gar wait: informe no máximo um id")
+		return exitUsage
 	}
 	var deadline time.Time
 	if *timeout > 0 {
 		deadline = time.Now().Add(*timeout)
 	}
 	for {
-		r, err := st.Load(id)
-		if err != nil {
-			return loadErr(err)
-		}
-		if r.Terminal() {
-			printJSON(r)
-			switch r.Status {
-			case StatusDone:
-				return 0
-			case StatusCancelled:
-				return exitCancelled
+		rs := make([]*Run, len(ids))
+		done := true
+		for i, id := range ids {
+			r, err := st.Load(id)
+			if err != nil {
+				return loadErr(err)
 			}
-			return exitFailed
+			rs[i], done = r, done && r.Terminal()
 		}
-		if !deadline.IsZero() && time.Now().After(deadline) {
-			printJSON(r)
-			fmt.Fprintf(os.Stderr, "gar wait: timeout de %s; caso %d ainda %s\n", *timeout, id, r.Status)
-			return exitTimeout
+		timedOut := !done && !deadline.IsZero() && time.Now().After(deadline)
+		if !done && !timedOut {
+			time.Sleep(500 * time.Millisecond)
+			continue
 		}
-		time.Sleep(500 * time.Millisecond)
+		if len(rs) == 1 {
+			printJSON(rs[0])
+		} else {
+			printJSON(rs)
+		}
+		exit := 0
+		for _, r := range rs {
+			if c := waitExit(r); c != 0 {
+				if exit == 0 {
+					exit = c
+				}
+				if c == exitTimeout {
+					fmt.Fprintf(os.Stderr, "gar wait: timeout de %s; caso %d ainda %s\n", *timeout, r.ID, r.Status)
+				}
+			}
+		}
+		return exit
 	}
+}
+
+// waitExit maps a case to gar wait's exit: done 0, failed 1, cancelled 2, unfinished 124.
+func waitExit(r *Run) int {
+	switch r.Status {
+	case StatusDone:
+		return 0
+	case StatusCancelled:
+		return exitCancelled
+	case StatusFailed:
+		return exitFailed
+	}
+	return exitTimeout
 }
 
 func cmdShow(st Store, args []string) int {
@@ -237,6 +305,9 @@ func cmdShow(st Store, args []string) int {
 		fmt.Printf(" por %s", r.CreatedBy)
 	}
 	fmt.Printf(" · %s:%s\n", r.Host, r.Cwd)
+	if r.Parallel {
+		fmt.Println("paralelo: roda junto de outros casos, sem fila")
+	}
 	if r.Why != "" {
 		fmt.Println("por quê:", r.Why)
 	}
