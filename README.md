@@ -1,14 +1,26 @@
 # gar (Go And Run)
 
+*English:* `gar` (Go And Run) lets a coding agent hand a shell command to a human: the agent
+registers the steps, the human runs them in their own terminal (with a real PTY, so `sudo`,
+`ssh` prompts and Ctrl-C work) and the agent reads back the output and exit codes as JSON. The
+rest of this document is in Portuguese; see [Instalar](#instalar), [Fluxo](#fluxo) and
+[Comandos](#comandos).
+
 O agente registra o comando, o humano roda no terminal dele e o agente lê o resultado.
 Serve para quando o agente não pode rodar sozinho: o guard bloqueia `ssh`, ou o comando pede senha.
+
+## Instalar
+
+```sh
+go install github.com/aryrabelo/gar@latest
+```
 
 ## Fluxo
 
 1. O agente registra os passos:
    ```sh
-   gar add --why "atualizar o macbot" -- \
-     'ssh macbot "cd ~/Sites/dotfiles-2026 && git pull --ff-only origin main && ./switch"' \
+   gar add --why "atualizar o meu-servidor" -- \
+     'ssh meu-servidor "cd ~/projeto && git pull --ff-only origin main && ./switch"' \
      'bora --version'
    # caso 1020 registrado em bora:w1D6
    # [HUMAN] ! gar run
